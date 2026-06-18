@@ -40,6 +40,9 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
       if (transceiver) {
         transceiver.direction = 'sendrecv';
         transceiver.sender.replaceTrack(track);
+        if (transceiver.sender.setStreams) {
+          transceiver.sender.setStreams(stream);
+        }
       } else {
         pc.addTrack(track, stream);
       }
@@ -87,19 +90,31 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
 
     // Handle remote tracks
     pc.ontrack = (event) => {
-      let stream = event.streams[0];
-      if (!stream) {
-        stream = new MediaStream([event.track]);
-      }
-
-      // Clone the stream to force a fresh reference for React, while keeping browser media routing
-      const freshStream = new MediaStream(stream.getTracks());
       setRemoteStreams(prev => {
         const existing = prev.find(s => s.peerId === peerId);
         if (existing) {
+          // Add the track if it's not already in the stream
+          const currentTracks = existing.stream.getTracks();
+          if (!currentTracks.some(t => t.id === event.track.id)) {
+            existing.stream.addTrack(event.track);
+          }
+          // Force React update by cloning the stream
+          const freshStream = new MediaStream(existing.stream.getTracks());
           return prev.map(s => s.peerId === peerId ? { ...s, stream: freshStream } : s);
+        } else {
+          // If no existing stream, use the browser stream if available, otherwise construct one
+          let stream = event.streams[0];
+          if (!stream) {
+            stream = new MediaStream([event.track]);
+          } else {
+            // Ensure the track is in the stream
+            if (!stream.getTracks().some(t => t.id === event.track.id)) {
+              stream.addTrack(event.track);
+            }
+          }
+          const freshStream = new MediaStream(stream.getTracks());
+          return [...prev, { peerId, stream: freshStream }];
         }
-        return [...prev, { peerId, stream: freshStream }];
       });
     };
 
@@ -194,6 +209,9 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
           if (nextVideoOn && videoTrack) {
             videoTransceiver.direction = 'sendrecv';
             await videoTransceiver.sender.replaceTrack(videoTrack);
+            if (videoTransceiver.sender.setStreams) {
+              videoTransceiver.sender.setStreams(currentStream);
+            }
           } else {
             videoTransceiver.direction = 'recvonly';
             await videoTransceiver.sender.replaceTrack(null);
@@ -212,6 +230,9 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
           if (nextAudioOn && audioTrack) {
             audioTransceiver.direction = 'sendrecv';
             await audioTransceiver.sender.replaceTrack(audioTrack);
+            if (audioTransceiver.sender.setStreams) {
+              audioTransceiver.sender.setStreams(currentStream);
+            }
           } else {
             audioTransceiver.direction = 'recvonly';
             await audioTransceiver.sender.replaceTrack(null);
