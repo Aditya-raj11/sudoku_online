@@ -148,16 +148,11 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
         audioTrack.enabled = true;
       }
     } else {
-      // If muting, only stop the track if we are turning OFF both audio and video (e.g. leaving call/turning off all devices)
-      // Otherwise, keep it alive but disabled to avoid remote track termination/re-negotiation failures.
+      // Always stop the microphone completely when muted to release hardware and clear Android mic indicator
       if (audioTrack) {
-        if (!nextVideoOn) {
-          audioTrack.stop();
-          currentStream.removeTrack(audioTrack);
-          audioTrack = undefined;
-        } else {
-          audioTrack.enabled = false;
-        }
+        audioTrack.stop();
+        currentStream.removeTrack(audioTrack);
+        audioTrack = undefined;
       }
     }
 
@@ -225,10 +220,6 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
         const audioTransceiver = transceivers.find(t => t.receiver.track.kind === 'audio');
         if (audioTransceiver) {
           if (nextAudioOn && audioTrack) {
-            audioTransceiver.direction = 'sendrecv';
-            await audioTransceiver.sender.replaceTrack(audioTrack);
-          } else if (audioTrack) {
-            // Keep sending silent/disabled track to keep peer connection stable.
             audioTransceiver.direction = 'sendrecv';
             await audioTransceiver.sender.replaceTrack(audioTrack);
           } else {
