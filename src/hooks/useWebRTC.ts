@@ -46,29 +46,6 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
     });
   }, []);
 
-  const updateRemoteStreamFromReceivers = useCallback((peerId: string, pc: RTCPeerConnection) => {
-    const tracks = pc.getReceivers()
-      .map(r => r.track)
-      .filter(track => track && track.readyState !== 'ended');
-
-    if (tracks.length > 0) {
-      const freshStream = new MediaStream(tracks);
-      setRemoteStreams(prev => {
-        const existing = prev.find(s => s.peerId === peerId);
-        if (existing) {
-          const existingTracks = existing.stream.getTracks();
-          const same = existingTracks.length === tracks.length &&
-            existingTracks.every(t => tracks.includes(t));
-          if (same) return prev;
-          return prev.map(s => s.peerId === peerId ? { ...s, stream: freshStream } : s);
-        }
-        return [...prev, { peerId, stream: freshStream }];
-      });
-    } else {
-      setRemoteStreams(prev => prev.filter(s => s.peerId !== peerId));
-    }
-  }, []);
-
   const getOrCreatePeerConnection = useCallback((peerId: string, isOfferer: boolean): RTCPeerConnection => {
     let pc = peerConnections.current.get(peerId);
     if (pc) {
@@ -109,8 +86,21 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
     };
 
     // Handle remote tracks
-    pc.ontrack = () => {
-      updateRemoteStreamFromReceivers(peerId, pc);
+    pc.ontrack = (event) => {
+      let stream = event.streams[0];
+      if (!stream) {
+        stream = new MediaStream([event.track]);
+      }
+
+      // Clone the stream to force a fresh reference for React, while keeping browser media routing
+      const freshStream = new MediaStream(stream.getTracks());
+      setRemoteStreams(prev => {
+        const existing = prev.find(s => s.peerId === peerId);
+        if (existing) {
+          return prev.map(s => s.peerId === peerId ? { ...s, stream: freshStream } : s);
+        }
+        return [...prev, { peerId, stream: freshStream }];
+      });
     };
 
     pc.onconnectionstatechange = () => {
@@ -121,7 +111,7 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
 
     peerConnections.current.set(peerId, pc);
     return pc;
-  }, [socket, addLocalStreamToPeerConnection, removePeer, updateRemoteStreamFromReceivers]);
+  }, [socket, addLocalStreamToPeerConnection, removePeer]);
 
   const updateLocalMediaState = useCallback(async (nextVideoOn: boolean, nextAudioOn: boolean) => {
     let currentStream = localStreamRef.current;
@@ -311,7 +301,6 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
         await pc.setLocalDescription(answer);
         socket.emit('webrtc-answer', { targetId: data.senderId, answer });
         await processIceQueue(pc);
-        updateRemoteStreamFromReceivers(data.senderId, pc);
       } catch (err) {
         console.error('Error handling offer:', err);
       }
@@ -323,7 +312,6 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
           await processIceQueue(pc);
-          updateRemoteStreamFromReceivers(data.senderId, pc);
         } catch (err) {
           console.error('Error handling answer:', err);
         }
