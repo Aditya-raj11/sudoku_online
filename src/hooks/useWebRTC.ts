@@ -91,12 +91,29 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
       if (!stream) {
         stream = new MediaStream([event.track]);
       }
+
+      // Handle dynamic track updates (add/remove) inside the stream reactively
+      const handleTracksChanged = () => {
+        setRemoteStreams(prev => {
+          const existing = prev.find(s => s.peerId === peerId);
+          if (existing) {
+            return prev.map(s => s.peerId === peerId ? { ...s, stream: new MediaStream(existing.stream.getTracks()) } : s);
+          }
+          return prev;
+        });
+      };
+
+      stream.onaddtrack = handleTracksChanged;
+      stream.onremovetrack = handleTracksChanged;
+
+      // Force a fresh MediaStream object reference so React useEffect re-runs and re-binds srcObject
+      const freshStream = new MediaStream(stream.getTracks());
       setRemoteStreams(prev => {
         const existing = prev.find(s => s.peerId === peerId);
         if (existing) {
-          return prev.map(s => s.peerId === peerId ? { ...s, stream } : s);
+          return prev.map(s => s.peerId === peerId ? { ...s, stream: freshStream } : s);
         }
-        return [...prev, { peerId, stream }];
+        return [...prev, { peerId, stream: freshStream }];
       });
     };
 
