@@ -46,6 +46,29 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
     });
   }, []);
 
+  const updateRemoteStreamFromReceivers = useCallback((peerId: string, pc: RTCPeerConnection) => {
+    const tracks = pc.getReceivers()
+      .map(r => r.track)
+      .filter(track => track && track.readyState !== 'ended');
+
+    if (tracks.length > 0) {
+      const freshStream = new MediaStream(tracks);
+      setRemoteStreams(prev => {
+        const existing = prev.find(s => s.peerId === peerId);
+        if (existing) {
+          const existingTracks = existing.stream.getTracks();
+          const same = existingTracks.length === tracks.length &&
+            existingTracks.every(t => tracks.includes(t));
+          if (same) return prev;
+          return prev.map(s => s.peerId === peerId ? { ...s, stream: freshStream } : s);
+        }
+        return [...prev, { peerId, stream: freshStream }];
+      });
+    } else {
+      setRemoteStreams(prev => prev.filter(s => s.peerId !== peerId));
+    }
+  }, []);
+
   const getOrCreatePeerConnection = useCallback((peerId: string, isOfferer: boolean): RTCPeerConnection => {
     let pc = peerConnections.current.get(peerId);
     if (pc) {
@@ -86,35 +109,8 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
     };
 
     // Handle remote tracks
-    pc.ontrack = (event) => {
-      let stream = event.streams[0];
-      if (!stream) {
-        stream = new MediaStream([event.track]);
-      }
-
-      // Handle dynamic track updates (add/remove) inside the stream reactively
-      const handleTracksChanged = () => {
-        setRemoteStreams(prev => {
-          const existing = prev.find(s => s.peerId === peerId);
-          if (existing) {
-            return prev.map(s => s.peerId === peerId ? { ...s, stream: new MediaStream(existing.stream.getTracks()) } : s);
-          }
-          return prev;
-        });
-      };
-
-      stream.onaddtrack = handleTracksChanged;
-      stream.onremovetrack = handleTracksChanged;
-
-      // Force a fresh MediaStream object reference so React useEffect re-runs and re-binds srcObject
-      const freshStream = new MediaStream(stream.getTracks());
-      setRemoteStreams(prev => {
-        const existing = prev.find(s => s.peerId === peerId);
-        if (existing) {
-          return prev.map(s => s.peerId === peerId ? { ...s, stream: freshStream } : s);
-        }
-        return [...prev, { peerId, stream: freshStream }];
-      });
+    pc.ontrack = () => {
+      updateRemoteStreamFromReceivers(peerId, pc);
     };
 
     pc.onconnectionstatechange = () => {
@@ -125,218 +121,162 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
 
     peerConnections.current.set(peerId, pc);
     return pc;
-  }, [socket, addLocalStreamToPeerConnection, removePeer]);
+  }, [socket, addLocalStreamToPeerConnection, removePeer, updateRemoteStreamFromReceivers]);
 
-  const startLocalStream = useCallback(async (initialVideo: boolean, initialAudio: boolean) => {
-    try {
-      const constraints: MediaStreamConstraints = {
-        video: initialVideo ? { width: 320, height: 240, facingMode: 'user' } : false,
-        audio: initialAudio,
-      };
+  const updateLocalMediaState = useCallback(async (nextVideoOn: boolean, nextAudioOn: boolean) => {
+    let currentStream = localStreamRef.current;
+    if (!currentStream) {
+      currentStream = new MediaStream();
+      localStreamRef.current = currentStream;
+    }
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+    let audioTrack: MediaStreamTrack | undefined = currentStream.getAudioTracks()[0];
+    let videoTrack: MediaStreamTrack | undefined = currentStream.getVideoTracks()[0];
 
-      setIsVideoOff(!initialVideo);
-      setIsMuted(!initialAudio);
-
-      // Update all peer connections and renegotiate
-      peerConnections.current.forEach(async (pc, peerId) => {
-        addLocalStreamToPeerConnection(pc, stream);
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit('webrtc-offer', { targetId: peerId, offer });
-        } catch (err) {
-          console.error('Error renegotiating offer:', err);
-        }
-      });
-
-      socket.emit('update-media-state', { isMuted: !initialAudio, isVideoOff: !initialVideo });
-    } catch (err) {
-      console.error('Failed to get media stream, trying audio-only:', err);
-      if (initialVideo) {
+    // 1. Acquire/Enable/Disable Audio
+    if (nextAudioOn) {
+      if (!audioTrack) {
         try {
           const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          localStreamRef.current = audioStream;
-          setLocalStream(audioStream);
-
-          setIsVideoOff(true);
-          setIsMuted(false);
-
-          peerConnections.current.forEach(async (pc, peerId) => {
-            addLocalStreamToPeerConnection(pc, audioStream);
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              socket.emit('webrtc-offer', { targetId: peerId, offer });
-            } catch (err) {
-              console.error('Error renegotiating offer (audio-only):', err);
-            }
-          });
-
-          socket.emit('update-media-state', { isMuted: false, isVideoOff: true });
-        } catch (audioErr) {
-          console.error('Failed to get audio stream:', audioErr);
+          audioTrack = audioStream.getAudioTracks()[0];
+          currentStream.addTrack(audioTrack);
+        } catch (err) {
+          console.error('Failed to get audio track:', err);
+        }
+      }
+      if (audioTrack) {
+        audioTrack.enabled = true;
+      }
+    } else {
+      // If muting, only stop the track if we are turning OFF both audio and video (e.g. leaving call/turning off all devices)
+      // Otherwise, keep it alive but disabled to avoid remote track termination/re-negotiation failures.
+      if (audioTrack) {
+        if (!nextVideoOn) {
+          audioTrack.stop();
+          currentStream.removeTrack(audioTrack);
+          audioTrack = undefined;
+        } else {
+          audioTrack.enabled = false;
         }
       }
     }
-  }, [socket, addLocalStreamToPeerConnection]);
 
-  const joinCall = useCallback(async () => {
-    await startLocalStream(true, true);
-  }, [startLocalStream]);
-
-  const leaveCall = useCallback(() => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
-    }
-    setLocalStream(null);
-    setIsMuted(true);
-    setIsVideoOff(true);
-
-    socket.emit('update-media-state', { isMuted: true, isVideoOff: true });
-
-    // Remove our tracks from all peer connections and renegotiate
-    peerConnections.current.forEach(async (pc, peerId) => {
-      pc.getTransceivers().forEach(transceiver => {
-        if (transceiver.direction === 'sendrecv' || transceiver.direction === 'sendonly') {
-          transceiver.direction = 'recvonly';
-          transceiver.sender.replaceTrack(null);
+    // 2. Acquire/Stop Video
+    if (nextVideoOn) {
+      if (!videoTrack) {
+        try {
+          const videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 320, height: 240, facingMode: 'user' }
+          });
+          videoTrack = videoStream.getVideoTracks()[0];
+          currentStream.addTrack(videoTrack);
+        } catch (err) {
+          console.error('Failed to get video track:', err);
         }
-      });
+      }
+      if (videoTrack) {
+        videoTrack.enabled = true;
+      }
+    } else {
+      // Always stop the camera completely to turn off the hardware light
+      if (videoTrack) {
+        videoTrack.stop();
+        currentStream.removeTrack(videoTrack);
+        videoTrack = undefined;
+      }
+    }
+
+    // 3. Update local stream reference
+    const activeTracks = currentStream.getTracks();
+    if (activeTracks.length > 0) {
+      setLocalStream(new MediaStream(activeTracks));
+    } else {
+      localStreamRef.current = null;
+      setLocalStream(null);
+    }
+
+    setIsVideoOff(!nextVideoOn || !videoTrack);
+    setIsMuted(!nextAudioOn || !audioTrack);
+
+    // 4. Update all peer connections
+    peerConnections.current.forEach(async (pc, peerId) => {
+      const transceivers = pc.getTransceivers();
+
+      // Video transceiver
+      try {
+        const videoTransceiver = transceivers.find(t => t.receiver.track.kind === 'video');
+        if (videoTransceiver) {
+          if (nextVideoOn && videoTrack) {
+            videoTransceiver.direction = 'sendrecv';
+            await videoTransceiver.sender.replaceTrack(videoTrack);
+          } else {
+            videoTransceiver.direction = 'recvonly';
+            await videoTransceiver.sender.replaceTrack(null);
+          }
+        } else if (nextVideoOn && videoTrack) {
+          pc.addTrack(videoTrack, currentStream!);
+        }
+      } catch (err) {
+        console.error('Error updating video transceiver:', err);
+      }
+
+      // Audio transceiver
+      try {
+        const audioTransceiver = transceivers.find(t => t.receiver.track.kind === 'audio');
+        if (audioTransceiver) {
+          if (nextAudioOn && audioTrack) {
+            audioTransceiver.direction = 'sendrecv';
+            await audioTransceiver.sender.replaceTrack(audioTrack);
+          } else if (audioTrack) {
+            // Keep sending silent/disabled track to keep peer connection stable.
+            audioTransceiver.direction = 'sendrecv';
+            await audioTransceiver.sender.replaceTrack(audioTrack);
+          } else {
+            audioTransceiver.direction = 'recvonly';
+            await audioTransceiver.sender.replaceTrack(null);
+          }
+        } else if (nextAudioOn && audioTrack) {
+          pc.addTrack(audioTrack, currentStream!);
+        }
+      } catch (err) {
+        console.error('Error updating audio transceiver:', err);
+      }
+
+      // Renegotiate
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit('webrtc-offer', { targetId: peerId, offer });
       } catch (err) {
-        console.error('Error renegotiating after stopping stream:', err);
+        console.error('Error renegotiating offer:', err);
       }
+    });
+
+    socket.emit('update-media-state', {
+      isMuted: !nextAudioOn || !audioTrack,
+      isVideoOff: !nextVideoOn || !videoTrack
     });
   }, [socket]);
 
+  const joinCall = useCallback(async () => {
+    await updateLocalMediaState(true, true);
+  }, [updateLocalMediaState]);
+
+  const leaveCall = useCallback(async () => {
+    await updateLocalMediaState(false, false);
+  }, [updateLocalMediaState]);
+
   const toggleMute = useCallback(async () => {
-    if (!localStreamRef.current) {
-      await startLocalStream(false, true);
-      return;
-    }
-
-    const audioTracks = localStreamRef.current.getAudioTracks();
-    if (audioTracks.length === 0) {
-      try {
-        const freshStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const newTrack = freshStream.getAudioTracks()[0];
-        if (newTrack) {
-          localStreamRef.current.addTrack(newTrack);
-          setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-          setIsMuted(false);
-          socket.emit('update-media-state', { isMuted: false, isVideoOff });
-
-          peerConnections.current.forEach(async (pc, peerId) => {
-            const transceivers = pc.getTransceivers();
-            const audioTransceiver = transceivers.find(t => t.receiver.track.kind === 'audio');
-            if (audioTransceiver) {
-              audioTransceiver.direction = 'sendrecv';
-              audioTransceiver.sender.replaceTrack(newTrack);
-            } else {
-              pc.addTrack(newTrack, localStreamRef.current!);
-            }
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              socket.emit('webrtc-offer', { targetId: peerId, offer });
-            } catch (err) {
-              console.error('Error renegotiating after unmuting:', err);
-            }
-          });
-        }
-      } catch (err) {
-        console.error('Failed to get audio track:', err);
-      }
-    } else {
-      audioTracks.forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsMuted(prev => {
-        const next = !prev;
-        socket.emit('update-media-state', { isMuted: next, isVideoOff });
-        return next;
-      });
-    }
-  }, [socket, isVideoOff, startLocalStream]);
+    const nextAudioOn = isMuted; // Turn on if currently muted
+    const currentVideoOn = !isVideoOff;
+    await updateLocalMediaState(currentVideoOn, nextAudioOn);
+  }, [isMuted, isVideoOff, updateLocalMediaState]);
 
   const toggleVideo = useCallback(async () => {
-    if (!localStreamRef.current) {
-      await startLocalStream(true, false);
-      return;
-    }
-
-    const videoTracks = localStreamRef.current.getVideoTracks();
-    const isCurrentlyOff = isVideoOff;
-
-    if (!isCurrentlyOff) {
-      // Stop the hardware track so the camera light turns off
-      videoTracks.forEach(track => {
-        track.stop();
-        localStreamRef.current?.removeTrack(track);
-      });
-      setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-      setIsVideoOff(true);
-      socket.emit('update-media-state', { isMuted, isVideoOff: true });
-
-      peerConnections.current.forEach(async (pc, peerId) => {
-        const transceivers = pc.getTransceivers();
-        const videoTransceiver = transceivers.find(t => t.receiver.track.kind === 'video');
-        if (videoTransceiver) {
-          videoTransceiver.direction = 'recvonly';
-          videoTransceiver.sender.replaceTrack(null);
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit('webrtc-offer', { targetId: peerId, offer });
-          } catch (err) {
-            console.error('Error renegotiating after stopping camera:', err);
-          }
-        }
-      });
-    } else {
-      // Re-enable camera hardware and replace it in active connections
-      try {
-        const freshStream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 320, height: 240, facingMode: 'user' }
-        });
-        const newTrack = freshStream.getVideoTracks()[0];
-        if (newTrack) {
-          localStreamRef.current.addTrack(newTrack);
-          setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-          setIsVideoOff(false);
-          socket.emit('update-media-state', { isMuted, isVideoOff: false });
-
-          peerConnections.current.forEach(async (pc, peerId) => {
-            const transceivers = pc.getTransceivers();
-            const videoTransceiver = transceivers.find(t => t.receiver.track.kind === 'video');
-            if (videoTransceiver) {
-              videoTransceiver.direction = 'sendrecv';
-              videoTransceiver.sender.replaceTrack(newTrack);
-            } else {
-              pc.addTrack(newTrack, localStreamRef.current!);
-            }
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              socket.emit('webrtc-offer', { targetId: peerId, offer });
-            } catch (err) {
-              console.error('Error renegotiating after starting camera:', err);
-            }
-          });
-        }
-      } catch (err) {
-        console.error('Failed to start camera:', err);
-      }
-    }
-  }, [socket, isMuted, isVideoOff, startLocalStream]);
+    const nextVideoOn = isVideoOff; // Turn on if currently off
+    const currentAudioOn = !isMuted;
+    await updateLocalMediaState(nextVideoOn, currentAudioOn);
+  }, [isMuted, isVideoOff, updateLocalMediaState]);
 
   const processIceQueue = async (pc: RTCPeerConnection) => {
     const queue = (pc as any)._iceQueue;
@@ -380,6 +320,7 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
         await pc.setLocalDescription(answer);
         socket.emit('webrtc-answer', { targetId: data.senderId, answer });
         await processIceQueue(pc);
+        updateRemoteStreamFromReceivers(data.senderId, pc);
       } catch (err) {
         console.error('Error handling offer:', err);
       }
@@ -391,6 +332,7 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
           await processIceQueue(pc);
+          updateRemoteStreamFromReceivers(data.senderId, pc);
         } catch (err) {
           console.error('Error handling answer:', err);
         }
