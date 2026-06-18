@@ -7,5 +7,11 @@ export default defineConfig({
   plugins: [react(), basicSsl()],
   server: {
     host: true,
+    proxy: {
+      '/socket.io': {
+        target: 'http://localhost:3001',
+        ws: true,
+      },
+    },
   },
 })

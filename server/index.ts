@@ -176,8 +176,8 @@ io.on('connection', (socket) => {
       score: 0,
       cursor: null,
       isHost: true,
-      isMuted: false,
-      isVideoOff: false,
+      isMuted: true,
+      isVideoOff: true,
     };
 
     room.players.set(socket.id, player);
@@ -224,8 +224,8 @@ io.on('connection', (socket) => {
       score: 0,
       cursor: null,
       isHost: false,
-      isMuted: false,
-      isVideoOff: false,
+      isMuted: true,
+      isVideoOff: true,
     };
 
     room.players.set(socket.id, player);

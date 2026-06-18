@@ -1,10 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-const SERVER_URL = import.meta.env.VITE_SOCKET_URL || 
-  (import.meta.env.DEV 
-    ? `http://${window.location.hostname}:3001` 
-    : window.location.origin);
+const SERVER_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
 
 let globalSocket: Socket | null = null;
 

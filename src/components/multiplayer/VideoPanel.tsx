@@ -17,7 +17,7 @@ interface VideoPanelProps {
 }
 
 const VideoTile: React.FC<{
-  stream: MediaStream;
+  stream?: MediaStream | null;
   name: string;
   color: string;
   isSelf?: boolean;
@@ -34,14 +34,16 @@ const VideoTile: React.FC<{
 
   return (
     <div className="video-tile" style={{ borderColor: color }}>
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted={isSelf}
-        className={isVideoOff ? 'video-hidden' : ''}
-      />
-      {isVideoOff && (
+      {stream && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={isSelf}
+          className={isVideoOff ? 'video-hidden' : ''}
+        />
+      )}
+      {(!stream || isVideoOff) && (
         <div className="video-avatar" style={{ background: color }}>
           {name.charAt(0).toUpperCase()}
         </div>
@@ -68,71 +70,45 @@ const VideoPanel: React.FC<VideoPanelProps> = ({
   currentPlayerId,
   isMuted,
   isVideoOff,
-  isInCall,
-  onJoinCall,
-  onLeaveCall,
   onToggleMute,
   onToggleVideo,
 }) => {
-
-  const currentPlayer = players.find(p => p.id === currentPlayerId);
-
-  if (!isInCall) {
-    return (
-      <div className="video-panel">
-        <div className="video-panel-header">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M23 7l-7 5 7 5V7zM14 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          <span>Video Call</span>
-        </div>
-        <div className="video-join-prompt">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-            <path d="M23 7l-7 5 7 5V7zM14 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" stroke="var(--text-light)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          <p>Start a video call to see your teammates</p>
-          <button className="video-join-btn" onClick={onJoinCall}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M23 7l-7 5 7 5V7zM14 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            Join Video Call
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="video-panel">
       <div className="video-panel-header">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
           <path d="M23 7l-7 5 7 5V7zM14 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
-        <span>Video Call ({1 + remoteStreams.length})</span>
+        <span>Video Call ({players.length})</span>
       </div>
-      <div className={`video-grid tiles-${1 + remoteStreams.length}`}>
-        {localStream && currentPlayer && (
-          <VideoTile
-            stream={localStream}
-            name={currentPlayer.name}
-            color={currentPlayer.color}
-            isSelf
-            isMuted={isMuted}
-            isVideoOff={isVideoOff}
-          />
-        )}
-        {remoteStreams.map(rs => {
-          const player = players.find(p => p.id === rs.peerId);
-          return (
-            <VideoTile
-              key={rs.peerId}
-              stream={rs.stream}
-              name={player?.name || 'Unknown'}
-              color={player?.color || '#94a3b3'}
-              isMuted={player?.isMuted}
-              isVideoOff={player?.isVideoOff}
-            />
-          );
+      <div className={`video-grid tiles-${players.length}`}>
+        {players.map(player => {
+          const isSelf = player.id === currentPlayerId;
+          if (isSelf) {
+            return (
+              <VideoTile
+                key={player.id}
+                stream={localStream}
+                name={player.name}
+                color={player.color}
+                isSelf
+                isMuted={isMuted}
+                isVideoOff={isVideoOff || !localStream}
+              />
+            );
+          } else {
+            const rs = remoteStreams.find(s => s.peerId === player.id);
+            return (
+              <VideoTile
+                key={player.id}
+                stream={rs?.stream}
+                name={player.name}
+                color={player.color}
+                isMuted={player.isMuted}
+                isVideoOff={player.isVideoOff || !rs}
+              />
+            );
+          }
         })}
       </div>
       <div className="video-controls">
@@ -170,16 +146,6 @@ const VideoPanel: React.FC<VideoPanelProps> = ({
               <path d="M23 7l-7 5 7 5V7zM14 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           )}
-        </button>
-        <button
-          className="video-ctrl-btn leave"
-          onClick={onLeaveCall}
-          title="Leave call"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 11.94 11.94 0 0 0 3.75.6 2 2 0 0 1 2 2v3.46a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-5.33-5.33A19.79 19.79 0 0 1 1.98 5.18 2 2 0 0 1 4 3h3.5a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 11.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
         </button>
       </div>
     </div>
