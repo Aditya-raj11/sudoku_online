@@ -35,7 +35,6 @@ const Header: React.FC<HeaderProps> = ({
           <h1 className="logo">Sudoku</h1>
           <nav className="header-nav">
             <a className="nav-link active" href="#" onClick={e => e.preventDefault()}>Classic</a>
-            <a className="nav-link" href="#" onClick={e => e.preventDefault()}>Killer</a>
           </nav>
         </div>
         <div className="header-right">
