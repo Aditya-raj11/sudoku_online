@@ -377,6 +377,17 @@ export function useWebRTC(roomCode: string | null, playerId: string | null) {
       socket.off('webrtc-answer', handleAnswer);
       socket.off('webrtc-ice', handleIce);
       socket.off('player-left', handlePlayerLeft);
+
+      // Close all peer connections and clear remote streams when leaving/switching rooms
+      peerConnections.current.forEach(pc => {
+        try {
+          pc.close();
+        } catch (e) {
+          console.error('Error closing peer connection on room exit:', e);
+        }
+      });
+      peerConnections.current.clear();
+      setRemoteStreams([]);
     };
   }, [socket, roomCode, playerId, getOrCreatePeerConnection, removePeer]);
 

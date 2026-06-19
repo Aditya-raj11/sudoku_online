@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMultiplayerContext } from '../contexts/MultiplayerContext';
 import { useWebRTC } from '../hooks/useWebRTC';
@@ -221,11 +221,19 @@ const MultiplayerGamePage: React.FC = () => {
   const [askingForName, setAskingForName] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [joinAttempted, setJoinAttempted] = useState(false);
+  const hasJoinedRef = useRef(false);
+
+  if (state.roomCode === code) {
+    hasJoinedRef.current = true;
+  }
 
   // Auto-join room if arriving via direct URL (not from lobby navigation)
   // If coming from lobby, state.roomCode will already be set from the shared context
   useEffect(() => {
     if (!code) return;
+    // If we have already successfully joined the room and roomCode is now null/different,
+    // it means we intentionally left. Do not auto-join again.
+    if (hasJoinedRef.current && state.roomCode !== code) return;
     // Already in a room (came from lobby) — no need to re-join
     if (state.roomCode === code) return;
     // Already attempted to join — don't retry
@@ -241,6 +249,13 @@ const MultiplayerGamePage: React.FC = () => {
       setAskingForName(true);
     }
   }, [state.isConnected, state.roomCode, code, joinRoom, joinAttempted]);
+
+  // Clean up room when component unmounts (e.g. browser back button or navigating away)
+  useEffect(() => {
+    return () => {
+      leaveRoom();
+    };
+  }, [leaveRoom]);
 
   const handleJoinWithName = useCallback(() => {
     if (nameInput.trim() && code) {
